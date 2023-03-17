@@ -14,8 +14,8 @@
 //filedirectory
 int filedirector;
 // ints for the lights, either on or off (1 = green, 0 = red)
-int LightNorth;
-int LightSouth;
+int LightNorth = 0; //ta bort = 0 senare
+int LightSouth = 0; //ta bort = 0 senare
 
 // amount of cars in the queues, and on the bridge at the start
 int Northqueue, Southqueue, Bridgecount = 0;
@@ -24,6 +24,7 @@ int Northqueue, Southqueue, Bridgecount = 0;
 pthread_t pr;
 pthread_t ui;
 pthread_t sim;
+pthread_t drive;
 pthread_mutex_t m = PTHREAD_MUTEX_INITIALIZER;
 
 
@@ -83,71 +84,46 @@ int Open_port(){
 
 void *GUI(void *arg){
 	pthread_mutex_lock(&m);
-	//printf("\033c\n"); //clearar screenen i cygwin
-	if(LightNorth){
-		printf(
-			"North: 1 \n", "\U0001F7E2", "\n"
-		);
+	printf("\033c\n"); //clearar screenen i cygwin
+	if(LightNorth == 1){
+		printf("               North: Green            ");
 	}
-	else;{
-		printf(
-			"North: 2 \n", "\U0001F534", "\n"
-		);
-	};
-	//northqueue
-	if(LightSouth){
-		printf(
-			"South: 1 \n", "\U0001F7E2", "\n"
-		);
+	
+	if(LightNorth == 0){
+		printf("               North: Red            ");
 	}
-	else;{
-		printf(
-			"South: 2 \n", "\U0001F534", "\n"
-		);
-	};
-	//southqueue
-	//bridgecount
+	
+	if(LightSouth == 1){
+		printf("          South: Green          \n");
+	}
+	
+	if(LightSouth == 0){
+		printf("         South: Red          \n");
+	}
+	
+	printf("Northqueue: %d", Northqueue, "       ");
+	printf("               Bridgequeue: %d", Bridgecount, "            ");
+	printf("                 Southqueue: %d", Southqueue);
+	printf("\n");
 	pthread_mutex_unlock(&m);
 	pthread_exit(0);
 
 }
 
+
 void *portreader(void *arg){
 	uint8_t buf;
 	
 	while(1){
-		uint8_t inverted_buf = ~buf;
-		int bytereader = read(filedirector, &inverted_buf, sizeof(inverted_buf));
+		int bytereader = read(filedirector, &buf, sizeof(buf));
 		
 		if(bytereader != 0){
-			LightNorth = (inverted_buf & 1); //om grönt ljus om 1, rött om 0 på least signifigant bit
-			LightSouth = (inverted_buf >> 2) & 1; //bitshift med 2, om 3e biten är 1 så grönt, rött om 0 på least signifigant bit
+			LightNorth = (buf & 1); //om grönt ljus om 1, rött om 0 på least signifigant bit
+			LightSouth = (buf >> 2) & 1; //bitshift med 2, om 3e biten är 1 så grönt, rött om 0 på least signifigant bit
 			pthread_create(&ui, NULL, GUI, NULL);
 		}
 	}
 
-}
-
-int Input(void *arg){
-	char keycharacter;
-	while(1){
-		keycharacter = getchar();
-		switch (keycharacter)
-		{
-		case 'n':
-			Northqueue = Northqueue + 1;
-			//write to port
-			break;
-		case 's':
-			Southqueue = Southqueue + 1;
-			// write to port
-			break;
-		case 'e':
-			break;
-		default:
-			printf("input a valid key you donkey");
-		}
-	}
 }
 
 void portwriter(uint8_t input){
@@ -158,18 +134,99 @@ void portwriter(uint8_t input){
 	}
 }
 
+int Input(void *arg){
+	char keycharacter;
+	while(1){
+		struct termios old, new;
+		char c;
+		
+		tcgetattr(STDIN_FILENO, &old);
+		
+		new = old;
+		
+		new.c_lflag &= ~(ICANON | ECHO);
+		tcsetattr(STDIN_FILENO, TCSANOW, &new);
+		
+		c = getchar();
+		
+		tcsetattr(STDIN_FILENO, TCSANOW, &old);
+		
+		
+		switch (c)
+		{
+		case 'n':
+			Northqueue = Northqueue + 1;
+			portwriter(1);
+			break;
+		case 's':
+			Southqueue = Southqueue + 1;
+			portwriter(4);
+			break;
+		case 'e':
+			break;
+		default:
+			printf("input a valid key you donkey");
+		}
+	}
+}
+
+
+
+void *bridge(void *arg){
+	Bridgecount = Bridgecount + 1;
+	pthread_create(&ui, NULL, GUI, NULL);
+	sleep(5);
+	Bridgecount = Bridgecount - 1;
+	pthread_create(&ui, NULL, GUI, NULL);
+	pthread_exit(0);
+}
+
+void *simulator(void *arg){
+	int oknorth = 1;
+	int oksouth = 1;
+	
+	while(1){
+		if( (Southqueue > 0) && LightSouth && oksouth){
+			Southqueue = Southqueue - 1;
+			pthread_create(&drive, NULL, bridge, NULL);
+			portwriter(8);
+			oksouth = 0;
+		}
+		if( (Northqueue > 0) && LightNorth && oknorth){
+			Northqueue = Northqueue - 1;
+			pthread_create(&drive, NULL, bridge, NULL);
+			portwriter(2);
+			oksouth = 0;
+		}
+		if(!LightNorth && !oknorth){
+			oknorth = 1;
+		}
+		if (!LightSouth && !oksouth){
+			oksouth = 1;
+		}
+	}
+}
+
 int main(void){
- 	printf("Välkommen till mitt ascoola program \n");
 	filedirector = Open_port();
 
 	if(pthread_create(&pr, NULL, portreader, NULL)){
-		printf("Threadfail on: Portreader");
+		printf("threadfail on: portreader");
 	}
 	if(pthread_create(&ui, NULL, GUI, NULL)){
 		printf("Threadfail on: GUI / Input");
 	}
+	if(pthread_create(&sim, NULL, simulator, NULL)){
+		printf("Threadfail on: Simulator");
+	}
+	
+	
+	
 	
 
 	return Input(NULL);
 
+	//while(1){
+		//
+	//}
 }
